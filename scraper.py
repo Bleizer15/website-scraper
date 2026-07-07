@@ -34,7 +34,11 @@ def get_product_info(url):
 
 def save_to_excel(data, filename='extracted_data.xlsx'):
     df = pd.DataFrame(data)
-    df.to_excel(filename, index=False)
+    try:
+        df.to_excel(filename, index=False)
+        print(f"Data saved to {filename}")
+    except Exception as e:
+        print(f"Error saving data to Excel: {e}")
 
 if __name__ == '__main__':
     url = 'https://www.myagrar.de/pflanzenschutzmittel/'
