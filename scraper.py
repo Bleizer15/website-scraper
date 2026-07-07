@@ -15,6 +15,9 @@ def get_product_info(url):
 
     # Assuming product information is within <div class="product">
     for product in soup.find_all('div', class_='product'):
+        if not product:
+            continue
+        
         name = product.find('h2').text.strip()
         
         # Find the largest package/volume size and its price
