@@ -27,11 +27,12 @@ def save_data_to_csv(data):
         writer.writeheader()
         for product in data:
             writer.writerow(product)
+    return filename
 
 def main():
     url = 'https://example.com/products'  # Replace with the actual URL
     products = extract_product_data(url)
-    save_data_to_csv(products)
+    filename = save_data_to_csv(products)
     print(f"Data saved to {filename}")
 
 if __name__ == '__main__':
