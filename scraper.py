@@ -25,8 +25,26 @@ import xml.etree.ElementTree as ET
 import json
 import re
 
+def get_desktop_path():
+    """Find the real Desktop folder. On many corporate Windows machines,
+    OneDrive's "Known Folder Move" redirects Desktop into a OneDrive
+    subfolder, so the plain ~/Desktop path doesn't exist - the registry
+    always reflects wherever Explorer currently considers Desktop."""
+    if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+            ) as key:
+                return winreg.QueryValueEx(key, "Desktop")[0]
+        except OSError:
+            pass
+    return os.path.join(os.path.expanduser("~"), "Desktop")
+
+
 LOGIN_URL = "https://www.myagrar.de/customer/account/login/"
-DESKTOP_PATH = os.path.join(os.path.expanduser("~"), "Desktop", "extracted_data.xlsx")
+DESKTOP_PATH = os.path.join(get_desktop_path(), "extracted_data.xlsx")
 DEBUG = True
 MAX_WORKERS = 15
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
