@@ -1,0 +1,12 @@
+.aider*
+.DS_Store
+*.pkg
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.spec
+ms-playwright/
+extracted_data.xlsx
