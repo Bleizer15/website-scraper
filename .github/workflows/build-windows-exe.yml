@@ -24,6 +24,9 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Install UPX
+        run: choco install upx -y
+
       - name: Build executable
         run: pyinstaller --onefile --name MyAgrarScraper scraper.py
 
