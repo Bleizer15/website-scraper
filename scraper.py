@@ -13,6 +13,9 @@ Step 4: Save everything to an Excel file on the Desktop.
 
 import os
 
+import truststore
+truststore.inject_into_ssl()
+
 import requests
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
