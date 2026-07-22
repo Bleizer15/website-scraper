@@ -11,16 +11,7 @@ Step 3: Fetch each product page in parallel using your logged-in session
 Step 4: Save everything to an Excel file on the Desktop.
 """
 
-import sys
 import os
-
-# When packaged as a standalone .exe (via PyInstaller), tell Playwright to
-# use a browser folder bundled right next to the executable. When running
-# as a normal script (like now), leave Playwright's default browser
-# location alone - it already has Chromium installed there.
-if getattr(sys, "frozen", False):
-    _app_dir = os.path.dirname(sys.executable)
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(_app_dir, "ms-playwright")
 
 import requests
 from playwright.sync_api import sync_playwright
@@ -43,7 +34,9 @@ def login_and_get_products():
     crop protection listing pages to collect product links - all in the
     same authenticated browser session."""
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        # Use the Edge browser already installed on Windows instead of a
+        # separate bundled Chromium - keeps the packaged .exe far smaller.
+        browser = p.chromium.launch(channel="msedge", headless=False)
         context = browser.new_context()
         page = context.new_page()
 
