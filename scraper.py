@@ -24,6 +24,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import json
 import re
+from urllib.parse import urljoin
 
 def get_desktop_path():
     """Find the real Desktop folder. On many corporate Windows machines,
@@ -360,6 +361,73 @@ def get_simple_package_row(html):
     return []
 
 
+ATR_DETAILS_URL = "https://www.myagrar.de/rest/V1/atr/configurable-product/get"
+
+
+def get_detail_product_id(html, sp_config):
+    """Find a simple-product id to query the extended-details endpoint with.
+    For configurable products (multiple package sizes), any one of the size
+    variants works - the regulatory/spec data doesn't change per size. For
+    plain single-package products, fall back to the id embedded in the page."""
+    if sp_config:
+        size_attr = find_size_attribute(sp_config.get("attributes", {}))
+        if size_attr:
+            for option in size_attr.get("options", []):
+                products = option.get("products", [])
+                if products:
+                    return products[0]
+    match = re.search(r'data-product-id="(\d+)"', html)
+    return match.group(1) if match else None
+
+
+def fetch_extended_details_html(session, product_id, retries=1):
+    """Fetch the extended product-details HTML fragment (active ingredients,
+    cost/hectare, application group, approved cultures, label PDF link).
+    This isn't in the page's initial HTML - the site loads it separately via
+    this REST endpoint and injects it client-side."""
+    if not product_id:
+        return ""
+    for attempt in range(retries + 1):
+        try:
+            resp = session.get(ATR_DETAILS_URL, params={"productId": product_id, "storeId": 1}, timeout=30)
+            resp.raise_for_status()
+            body = resp.json()  # the response is itself a JSON-encoded string
+            data = json.loads(body) if isinstance(body, str) else body
+            return data.get(".product__details", "") or ""
+        except (requests.RequestException, ValueError):
+            if attempt < retries:
+                continue
+            return ""
+    return ""
+
+
+def parse_additional_attributes(details_html):
+    """Parse the "Spezifikationen" definition list (dt/dd pairs) out of the
+    extended-details HTML fragment into a {label: value} dict."""
+    soup = BeautifulSoup(details_html or "", "html.parser")
+    attrs = {}
+    for dt in soup.select("dl.additional-attributes__list dt"):
+        label_el = dt.find("span")
+        label = label_el.get_text(strip=True) if label_el else dt.get_text(strip=True)
+        dd = dt.find_next_sibling("dd")
+        if label and dd:
+            attrs[label] = dd.get_text(strip=True)
+    return attrs
+
+
+def find_label_pdf_url(details_html):
+    """Find the link to the product label / instructions-for-use PDF, which
+    the site gives in German ("Gebrauchsanweisung...") or English
+    ("Instructions for use...") depending on the product - never the
+    separate safety-data-sheet ("Sicherheitsdatenblatt") PDF also listed."""
+    soup = BeautifulSoup(details_html or "", "html.parser")
+    for a in soup.find_all("a", class_="action", href=True):
+        text = a.get_text(strip=True)
+        if text.startswith("Gebrauchsanweisung") or text.startswith("Instructions for use"):
+            return urljoin("https://www.myagrar.de/", a["href"])
+    return None
+
+
 def process_product_url(product, session, retries=2):
     """Fetch one product page (already confirmed to be crop protection) and extract pricing."""
     html = None
@@ -384,7 +452,20 @@ def process_product_url(product, session, retries=2):
     if not rows:
         return None
 
-    return {"name": product["Name"], "url": product["URL"], "rows": rows}
+    detail_product_id = get_detail_product_id(html, sp_config)
+    details_html = fetch_extended_details_html(session, detail_product_id)
+    extra = parse_additional_attributes(details_html)
+
+    return {
+        "name": product["Name"],
+        "url": product["URL"],
+        "rows": rows,
+        "cost_per_hectare": extra.get("Kosten per Hektar"),
+        "application_group": extra.get("Anwendungsgruppe"),
+        "active_ingredients": extra.get("Wirkstoffe"),
+        "approved_cultures": extra.get("Zugelassene Kulturen"),
+        "label_pdf_url": find_label_pdf_url(details_html),
+    }
 
 
 def scrape():
@@ -410,6 +491,11 @@ def scrape():
                         "Total Price for Packaging Size (EUR)": row["Total Price for Packaging Size (EUR)"],
                         "Price per Unit (EUR)": row["Price per Unit (EUR)"],
                         "Unit": row["Unit"],
+                        "Cost per Hectare": product["cost_per_hectare"],
+                        "Application Group": product["application_group"],
+                        "Active Ingredients": product["active_ingredients"],
+                        "Approved Cultures": product["approved_cultures"],
+                        "Label PDF": product["label_pdf_url"],
                         "URL": product["url"],
                     })
 
