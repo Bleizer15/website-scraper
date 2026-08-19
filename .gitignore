@@ -10,3 +10,7 @@ dist/
 *.spec
 ms-playwright/
 extracted_data.xlsx
+platform_detect.py
+shopware_extract.py
+sw_test.txt
+targets.txt
