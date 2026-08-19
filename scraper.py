@@ -415,6 +415,63 @@ def parse_additional_attributes(details_html):
     return attrs
 
 
+def parse_culture_usage_rates(details_html):
+    """Map each approved culture to its max application rate per hectare
+    (the highest across all listed pests/uses for that culture), parsed
+    from the "Anwendungshinweise pro zugelassener Kultur und Schaderreger"
+    nested details tree. Order matches the site's own listing order, so it
+    lines up 1:1 with format_culture_costs' output."""
+    soup = BeautifulSoup(details_html or "", "html.parser")
+    h4 = soup.find("h4", string=lambda t: t and "Anwendungshinweise pro zugelassener Kultur" in t)
+    wrapper = h4.find_next_sibling("details") if h4 else None
+    if not wrapper:
+        return {}
+
+    rates = {}
+    for culture_details in wrapper.find_all("details", recursive=False):
+        h5 = culture_details.find("h5")
+        if not h5:
+            continue
+        culture = h5.get_text(strip=True).title()
+        best_amount, best_unit = None, None
+        for row in culture_details.find_all("tr"):
+            cells = row.find_all("td")
+            if len(cells) != 2:
+                continue
+            label = cells[0].get_text(strip=True)
+            if label.startswith("max. Aufwandsmenge") and "Saison" not in label:
+                amount, unit = _parse_rate_amount_and_unit(cells[1].get_text(strip=True))
+                if amount is not None and (best_amount is None or amount > best_amount):
+                    best_amount, best_unit = amount, unit
+        if best_amount is not None:
+            rates[culture] = (best_amount, best_unit)
+    return rates
+
+
+def _parse_rate_amount_and_unit(text):
+    match = re.search(r"([\d.,]+)\s*([^\s]+/ha)", text)
+    if not match:
+        return None, None
+    return _to_float(match.group(1)), match.group(2)
+
+
+def format_culture_costs(culture_rates, price_per_unit, unit):
+    """One line per culture, in the same order as the Approved Cultures
+    column, so the two columns read line-for-line in Excel. Skips a
+    culture's cost when its rate unit (e.g. l/ha) doesn't match this
+    package's price unit (e.g. kg) - can't compute a sane number then."""
+    if not culture_rates or not isinstance(price_per_unit, (int, float)) or not unit:
+        return None
+    lines = []
+    for rate_amount, rate_unit in culture_rates.values():
+        rate_base_unit = rate_unit.split("/")[0] if rate_unit else None
+        if rate_base_unit and rate_base_unit.lower() == unit.lower():
+            lines.append(f"{round(price_per_unit * rate_amount, 2):.2f} €/ha")
+        else:
+            lines.append("n/a")
+    return "\n".join(lines)
+
+
 def find_label_pdf_url(details_html):
     """Find the link to the product label / instructions-for-use PDF, which
     the site gives in German ("Gebrauchsanweisung...") or English
@@ -455,6 +512,12 @@ def process_product_url(product, session, retries=2):
     detail_product_id = get_detail_product_id(html, sp_config)
     details_html = fetch_extended_details_html(session, detail_product_id)
     extra = parse_additional_attributes(details_html)
+    culture_rates = parse_culture_usage_rates(details_html)
+
+    # Prefer the per-culture rate table's culture names (needed anyway for
+    # the cost-per-culture column, so both columns line up 1:1) - fall back
+    # to the plain spec-list text for products without a rate table.
+    approved_cultures = "\n".join(culture_rates.keys()) if culture_rates else extra.get("Zugelassene Kulturen")
 
     return {
         "name": product["Name"],
@@ -463,7 +526,8 @@ def process_product_url(product, session, retries=2):
         "cost_per_hectare": extra.get("Kosten per Hektar"),
         "application_group": extra.get("Anwendungsgruppe"),
         "active_ingredients": extra.get("Wirkstoffe"),
-        "approved_cultures": extra.get("Zugelassene Kulturen"),
+        "approved_cultures": approved_cultures,
+        "culture_rates": culture_rates,
         "label_pdf_url": find_label_pdf_url(details_html),
     }
 
@@ -495,6 +559,9 @@ def scrape():
                         "Application Group": product["application_group"],
                         "Active Ingredients": product["active_ingredients"],
                         "Approved Cultures": product["approved_cultures"],
+                        "Cost per Hectare per Culture": format_culture_costs(
+                            product["culture_rates"], row["Price per Unit (EUR)"], row["Unit"]
+                        ),
                         "Label PDF": product["label_pdf_url"],
                         "URL": product["url"],
                     })
@@ -618,6 +685,42 @@ def highlight_best_prices(filename, sheet_name="Current Run"):
     print(f"Highlighted best per-unit price for {highlighted} multi-size product(s).")
 
 
+def style_worksheet(filename):
+    """Wrap the multi-line cells (one culture/cost per line) so Excel shows
+    them as readable stacked lines instead of one run-on line, and format
+    the comparison sheet's Change (%) column with a visible % sign while
+    keeping the underlying value numeric/sortable."""
+    from openpyxl import load_workbook
+    from openpyxl.styles import Alignment
+
+    wb = load_workbook(filename)
+    wrap_alignment = Alignment(wrap_text=True, vertical="top")
+
+    for sheet_name in ("Current Run", "Previous Run"):
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+        headers = [cell.value for cell in ws[1]]
+        for col_name in ("Approved Cultures", "Cost per Hectare per Culture"):
+            if col_name not in headers:
+                continue
+            col = headers.index(col_name) + 1
+            for row_idx in range(2, ws.max_row + 1):
+                ws.cell(row=row_idx, column=col).alignment = wrap_alignment
+
+    if "Comparison" in wb.sheetnames:
+        ws = wb["Comparison"]
+        headers = [cell.value for cell in ws[1]]
+        if "Change (%)" in headers:
+            col = headers.index("Change (%)") + 1
+            for row_idx in range(2, ws.max_row + 1):
+                cell = ws.cell(row=row_idx, column=col)
+                if isinstance(cell.value, (int, float)):
+                    cell.number_format = '0.0"%"'
+
+    wb.save(filename)
+
+
 def save_to_excel(data, filename=DESKTOP_PATH):
     if not data:
         print("No data extracted - Excel file not created.")
@@ -652,6 +755,7 @@ def save_to_excel(data, filename=DESKTOP_PATH):
         comparison_df.to_excel(writer, sheet_name="Comparison", index=False)
 
     highlight_best_prices(filename, "Current Run")
+    style_worksheet(filename)
 
     print(f"Success! Saved {len(data)} rows to {filename}")
 
