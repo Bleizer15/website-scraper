@@ -52,9 +52,9 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 
 
 def login_and_get_products():
-    """Open a real browser, let the user log in, then click through the
-    crop protection listing pages to collect product links - all in the
-    same authenticated browser session."""
+    """Open a real browser, let the user log in, then click through every
+    listing page (crop protection + fertilizer) to collect product links -
+    all in the same authenticated browser session."""
     with sync_playwright() as p:
         # Use the Edge browser already installed on Windows instead of a
         # separate bundled Chromium - keeps the packaged .exe far smaller.
@@ -67,7 +67,14 @@ def login_and_get_products():
         print("Please log in with your account in that browser window now.")
         input("Once you're logged in, come back here and press Enter to continue...")
 
-        products = get_product_list(page)
+        # Dedup by URL across every listing, in case a product is somehow
+        # reachable from more than one category.
+        all_products = {}
+        for category, listing_url in LISTING_URLS:
+            for product in get_product_list(page, listing_url):
+                if product["URL"] not in all_products:
+                    all_products[product["URL"]] = {**product, "Category": category}
+        products = list(all_products.values())
 
         session = requests.Session()
         session.headers.update(HEADERS)
@@ -81,19 +88,33 @@ def login_and_get_products():
     return products, session
 
 
-LISTING_URL = "https://www.myagrar.de/pflanzenschutzmittel/"
+LISTING_URLS = [
+    ("Pflanzenschutz", "https://www.myagrar.de/pflanzenschutzmittel/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/blattdunger/biostimulanzien/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/blattdunger/einzelnahrstoffdunger/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/blattdunger/mehrnahrstoffdunger/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/blattdunger/mikrogranulat/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/blattdunger/mineraldunger/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/blattdunger/wirtschaftsdunger-analytik/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/mineraldunger/kali-dunger/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/mineraldunger/np-dunger/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/mineraldunger/stickstoff-dunger/"),
+    ("Dünger", "https://www.myagrar.de/dungemittel/mineraldunger/zubehor/"),
+]
+# Excludes dungemittel/kulturen/* and dungemittel/nahrstoffe/* - those are
+# cross-cutting filter views of the same products above, not distinct ones.
 
 
-def get_product_list(page):
+def get_product_list(page, listing_url):
     """
-    Click through the crop protection listing pages directly (not the
-    whole-site sitemap - that was overkill). The pagination control is a
-    custom widget where the "Next" button sometimes shows the word
-    "Weiter" and sometimes just a "->" arrow character, so we match on
-    the arrow itself (always present) rather than the word.
+    Click through one listing's pages directly (not the whole-site sitemap -
+    that was overkill). The pagination control is a custom widget where the
+    "Next" button sometimes shows the word "Weiter" and sometimes just a
+    "->" arrow character, so we match on the arrow itself (always present)
+    rather than the word.
     """
-    print(f"Opening listing page: {LISTING_URL}")
-    page.goto(LISTING_URL, timeout=60000)
+    print(f"Opening listing page: {listing_url}")
+    page.goto(listing_url, timeout=60000)
     page.wait_for_selector("a.product-item-link", timeout=30000)
     page.wait_for_timeout(3000)
 
@@ -182,7 +203,7 @@ def get_product_list(page):
                 continue
 
     products = [{"Name": name, "URL": url} for url, name in all_products.items()]
-    print(f"Found {len(products)} unique crop protection products.")
+    print(f"Found {len(products)} unique products on this listing.")
     return products
 
 
@@ -520,6 +541,7 @@ def process_product_url(product, session, retries=2):
     return {
         "name": product["Name"],
         "url": product["URL"],
+        "category": product["Category"],
         "rows": rows,
         "cost_per_hectare": extra.get("Kosten per Hektar"),
         "application_group": extra.get("Anwendungsgruppe"),
@@ -550,6 +572,7 @@ def scrape():
                     print(f"  {product['name']}: {len(product['rows'])} size(s)")
                 for row in product["rows"]:
                     base = {
+                        "Category": product["category"],
                         "Name": product["name"],
                         "Package Size": row["Package Size"],
                         "Total Price for Packaging Size (EUR)": row["Total Price for Packaging Size (EUR)"],
