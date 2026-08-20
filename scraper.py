@@ -484,6 +484,49 @@ def _parse_rate_amount_and_unit(text):
     return _to_float(match.group(1)), match.group(2)
 
 
+def parse_recommended_rate(text):
+    """Parse a fertilizer's own recommended-rate text into a total
+    per-hectare amount. Handles a plain range ("3-7 l/ha" -> 7, the higher
+    end, matching the site's own "bis zu"/up-to convention for cost) and a
+    multi-application range ("1-4 x 2,0-3,0 l/ha" -> 4 x 3.0 = 12.0 l/ha),
+    so a product applied several times isn't undercounted to one dose."""
+    multi = re.search(
+        r"([\d.,]+)(?:\s*-\s*([\d.,]+))?\s*x\s*([\d.,]+)(?:\s*-\s*([\d.,]+))?\s*([^\s]+/ha)",
+        text, re.IGNORECASE,
+    )
+    if multi:
+        count_lo, count_hi, rate_lo, rate_hi, unit = multi.groups()
+        count = _to_float(count_hi or count_lo)
+        rate = _to_float(rate_hi or rate_lo)
+        if count is not None and rate is not None:
+            return round(count * rate, 4), unit
+
+    single = re.search(r"([\d.,]+)(?:\s*-\s*([\d.,]+))?\s*([^\s]+/ha)", text)
+    if single:
+        lo, hi, unit = single.groups()
+        amount = _to_float(hi or lo)
+        if amount is not None:
+            return amount, unit
+
+    return None, None
+
+
+def parse_fertilizer_rate(html):
+    """Extract a fertilizer's own recommended per-hectare rate from its
+    short-description bullet list - Dünger has no per-culture rate table
+    like crop protection does, so this is the closest available source for
+    a Cost per Hectare estimate."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    container = soup.find("div", class_="product__short-description")
+    if not container:
+        return None, None
+    for li in container.find_all("li"):
+        text = li.get_text(strip=True)
+        if "aufwandmenge" in text.lower():
+            return parse_recommended_rate(text)
+    return None, None
+
+
 def compute_culture_cost(rate_amount, rate_unit, price_per_unit, unit):
     """Cost per hectare for one culture's application rate, using this
     package's own price-per-unit. None when the rate's unit (e.g. l/ha)
@@ -494,6 +537,18 @@ def compute_culture_cost(rate_amount, rate_unit, price_per_unit, unit):
     if rate_unit.split("/")[0].lower() != unit.lower():
         return None
     return round(price_per_unit * rate_amount, 2)
+
+
+def resolve_cost_per_hectare(product, row):
+    """The site's own Kosten per Hektar text when it has one (crop
+    protection). Otherwise (Dünger has no such field) compute our own
+    estimate from the product's recommended-rate text and this package's
+    own price - marked "(berechnet)" so it's clearly not a site figure."""
+    if product["cost_per_hectare"] is not None:
+        return product["cost_per_hectare"]
+    rate_amount, rate_unit = product["fertilizer_rate"]
+    cost = compute_culture_cost(rate_amount, rate_unit, row["Price per Unit (EUR)"], row["Unit"])
+    return f"{cost:.2f} €/ha (berechnet)" if cost is not None else None
 
 
 def get_culture_entries(product):
@@ -562,6 +617,10 @@ def process_product_url(product, session, retries=2):
         "category": product["Category"],
         "rows": rows,
         "cost_per_hectare": extra.get("Kosten per Hektar"),
+        # Fallback for products with no site-provided Kosten per Hektar
+        # (Dünger doesn't have one) - a rate we compute cost/ha from
+        # ourselves, using each package's own price (see scrape()).
+        "fertilizer_rate": parse_fertilizer_rate(html),
         "application_group": extra.get("Anwendungsgruppe"),
         # "Wirkstoffe" (active ingredient) on crop protection products,
         # "Inhaltsstoffe" (ingredients) is the fertilizer equivalent.
@@ -598,7 +657,7 @@ def scrape():
                         "Total Price for Packaging Size (EUR)": row["Total Price for Packaging Size (EUR)"],
                         "Price per Unit (EUR)": row["Price per Unit (EUR)"],
                         "Unit": row["Unit"],
-                        "Cost per Hectare": product["cost_per_hectare"],
+                        "Cost per Hectare": resolve_cost_per_hectare(product, row),
                         "Application Group": product["application_group"],
                         "Active Ingredients": product["active_ingredients"],
                     }
