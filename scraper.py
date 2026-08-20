@@ -554,6 +554,7 @@ def process_product_url(product, session, retries=2):
     details_html = fetch_extended_details_html(session, detail_product_id)
     extra = {**parse_additional_attributes(html), **parse_additional_attributes(details_html)}
     culture_rates = parse_culture_usage_rates(details_html) or parse_culture_usage_rates(html)
+    label_pdf_url = find_label_pdf_url(details_html) or find_label_pdf_url(html)
 
     return {
         "name": product["Name"],
@@ -569,7 +570,7 @@ def process_product_url(product, session, retries=2):
         # Dünger) - used only when culture_rates is empty (see scrape()).
         "approved_cultures": extra.get("Zugelassene Kulturen"),
         "culture_rates": culture_rates,
-        "label_pdf_url": find_label_pdf_url(details_html),
+        "label_pdf_url": label_pdf_url,
     }
 
 
