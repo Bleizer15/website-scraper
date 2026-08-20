@@ -431,7 +431,13 @@ def parse_culture_usage_rates(details_html):
         h5 = culture_details.find("h5")
         if not h5:
             continue
-        culture = h5.get_text(strip=True).title()
+        # The site sometimes groups several culture names into one entry,
+        # e.g. "PORTULAK/GEMÜSE-/SOMMER-" or "FÄRBER-WAU/FÄRBER-RESEDE/
+        # GELBKRAUT" - split on "/" so each becomes its own culture, all
+        # sharing this block's rate (they're approved together, same table).
+        cultures = [c.strip().title() for c in h5.get_text(strip=True).split("/") if c.strip()]
+        if not cultures:
+            continue
         best_amount, best_unit = None, None
         for row in culture_details.find_all("tr"):
             cells = row.find_all("td")
@@ -442,8 +448,11 @@ def parse_culture_usage_rates(details_html):
                 amount, unit = _parse_rate_amount_and_unit(cells[1].get_text(strip=True))
                 if amount is not None and (best_amount is None or amount > best_amount):
                     best_amount, best_unit = amount, unit
-        if best_amount is not None:
-            rates[culture] = (best_amount, best_unit)
+        if best_amount is None:
+            continue
+        for culture in cultures:
+            if culture not in rates or best_amount > rates[culture][0]:
+                rates[culture] = (best_amount, best_unit)
     return rates
 
 
