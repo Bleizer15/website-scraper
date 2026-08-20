@@ -496,6 +496,18 @@ def compute_culture_cost(rate_amount, rate_unit, price_per_unit, unit):
     return round(price_per_unit * rate_amount, 2)
 
 
+def get_culture_entries(product):
+    """List of (culture_name, rate_amount, rate_unit) to emit one row per
+    culture. Falls back to splitting the plain comma-separated culture list
+    (no per-hectare rate available then - common for Dünger, which has no
+    per-culture rate table) when there's no rate table at all."""
+    if product["culture_rates"]:
+        return [(name, amount, unit) for name, (amount, unit) in product["culture_rates"].items()]
+    if product["approved_cultures"]:
+        return [(name.strip(), None, None) for name in product["approved_cultures"].split(",") if name.strip()]
+    return [(None, None, None)]
+
+
 def find_label_pdf_url(details_html):
     """Find the link to the product label / instructions-for-use PDF, which
     the site gives in German ("Gebrauchsanweisung...") or English
@@ -533,10 +545,15 @@ def process_product_url(product, session, retries=2):
     if not rows:
         return None
 
+    # Configurable products (multiple package sizes) get their spec block
+    # via a separate AJAX call - but simple/single-package products (common
+    # for Dünger) embed it directly in the page instead, and never get a
+    # usable id for that AJAX call. Parse both and let the AJAX fragment
+    # (more complete, when it exists) win on overlapping fields.
     detail_product_id = get_detail_product_id(html, sp_config)
     details_html = fetch_extended_details_html(session, detail_product_id)
-    extra = parse_additional_attributes(details_html)
-    culture_rates = parse_culture_usage_rates(details_html)
+    extra = {**parse_additional_attributes(html), **parse_additional_attributes(details_html)}
+    culture_rates = parse_culture_usage_rates(details_html) or parse_culture_usage_rates(html)
 
     return {
         "name": product["Name"],
@@ -545,9 +562,11 @@ def process_product_url(product, session, retries=2):
         "rows": rows,
         "cost_per_hectare": extra.get("Kosten per Hektar"),
         "application_group": extra.get("Anwendungsgruppe"),
-        "active_ingredients": extra.get("Wirkstoffe"),
-        # Fallback for the rare product with no per-culture rate table -
-        # used only when culture_rates is empty (see scrape()).
+        # "Wirkstoffe" (active ingredient) on crop protection products,
+        # "Inhaltsstoffe" (ingredients) is the fertilizer equivalent.
+        "active_ingredients": extra.get("Wirkstoffe") or extra.get("Inhaltsstoffe"),
+        # Fallback for products with no per-culture rate table (common for
+        # Dünger) - used only when culture_rates is empty (see scrape()).
         "approved_cultures": extra.get("Zugelassene Kulturen"),
         "culture_rates": culture_rates,
         "label_pdf_url": find_label_pdf_url(details_html),
@@ -587,21 +606,13 @@ def scrape():
                     # exactly one culture - lets a plain Excel filter isolate
                     # a single culture cleanly, instead of everything sharing
                     # one product's combined culture list.
-                    if product["culture_rates"]:
-                        for culture, (rate_amount, rate_unit) in product["culture_rates"].items():
-                            results.append({
-                                **base,
-                                "Approved Culture": culture,
-                                "Cost per Hectare (Culture)": compute_culture_cost(
-                                    rate_amount, rate_unit, row["Price per Unit (EUR)"], row["Unit"]
-                                ),
-                                **tail,
-                            })
-                    else:
+                    for culture, rate_amount, rate_unit in get_culture_entries(product):
                         results.append({
                             **base,
-                            "Approved Culture": product["approved_cultures"],
-                            "Cost per Hectare (Culture)": None,
+                            "Approved Culture": culture,
+                            "Cost per Hectare (Culture)": compute_culture_cost(
+                                rate_amount, rate_unit, row["Price per Unit (EUR)"], row["Unit"]
+                            ),
                             **tail,
                         })
 
