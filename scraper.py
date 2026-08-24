@@ -539,14 +539,33 @@ def compute_culture_cost(rate_amount, rate_unit, price_per_unit, unit):
     return round(price_per_unit * rate_amount, 2)
 
 
+def max_matching_rate(rates, unit):
+    """Highest rate among `rates` (a {name: (amount, rate_unit)} dict)
+    whose unit matches `unit` (e.g. rate_unit "l/ha" matches unit "l") -
+    filtering before taking the max so a mismatched-unit rate on one
+    culture can't shadow a valid same-unit rate on another."""
+    matching = [
+        (amount, rate_unit) for amount, rate_unit in rates.values()
+        if rate_unit and unit and rate_unit.split("/")[0].lower() == unit.lower()
+    ]
+    return max(matching, key=lambda r: r[0]) if matching else (None, None)
+
+
 def resolve_cost_per_hectare(product, row):
-    """The site's own Kosten per Hektar text when it has one (crop
-    protection). Otherwise (Dünger has no such field) compute our own
-    estimate from the product's recommended-rate text and this package's
-    own price - marked "(berechnet)" so it's clearly not a site figure."""
+    """The site's own Kosten per Hektar text when it has one. Otherwise
+    compute our own estimate: from the highest matching-unit rate among the
+    product's approved cultures when we have per-culture rate data (some
+    crop protection products, like Karate Zeon, simply don't get a site
+    figure despite having full rate data) - or from the product's own
+    recommended-rate text when there's no per-culture table at all (common
+    for Dünger). Marked "(berechnet)" so it's clearly not a site figure."""
     if product["cost_per_hectare"] is not None:
         return product["cost_per_hectare"]
-    rate_amount, rate_unit = product["fertilizer_rate"]
+
+    rate_amount, rate_unit = max_matching_rate(product["culture_rates"], row["Unit"])
+    if rate_amount is None:
+        rate_amount, rate_unit = product["fertilizer_rate"]
+
     cost = compute_culture_cost(rate_amount, rate_unit, row["Price per Unit (EUR)"], row["Unit"])
     return f"{cost:.2f} €/ha (berechnet)" if cost is not None else None
 
