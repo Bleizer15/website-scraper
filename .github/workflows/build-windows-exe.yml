@@ -9,6 +9,9 @@ on:
       - "requirements.txt"
       - ".github/workflows/build-windows-exe.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -30,8 +33,19 @@ jobs:
       - name: Build executable
         run: pyinstaller --onefile --name MyAgrarScraper scraper.py
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: MyAgrarScraper-windows
-          path: dist/
+      # Published as a GitHub Release asset instead of an Actions artifact -
+      # Actions artifact storage has a tight 500MB free-tier quota shared
+      # across all runs (easy to exhaust during active iteration, and takes
+      # 6-12 hours to recalculate after deleting old ones); Releases don't
+      # share that quota and don't expire.
+      - name: Publish as a release
+        shell: bash
+        run: |
+          gh release delete latest-build --yes --cleanup-tag || true
+          git tag -f latest-build
+          git push -f origin latest-build
+          gh release create latest-build dist/MyAgrarScraper.exe \
+            --title "Latest build" \
+            --notes "Automatically built from commit ${{ github.sha }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
