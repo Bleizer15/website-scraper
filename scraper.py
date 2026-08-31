@@ -436,11 +436,24 @@ def parse_additional_attributes(details_html):
     return attrs
 
 
+def detect_season(text):
+    """"Frühjahr" (spring) or "Herbst" (autumn) if the text mentions
+    exactly one of them, else None - neither mentioned, or both (genuinely
+    ambiguous), isn't a season we can confidently report."""
+    has_spring = "Frühjahr" in text
+    has_autumn = "Herbst" in text
+    if has_spring and not has_autumn:
+        return "Frühjahr"
+    if has_autumn and not has_spring:
+        return "Herbst"
+    return None
+
+
 def parse_culture_usage_rates(details_html):
     """Map each approved culture to its max application rate per hectare
-    (the highest across all listed pests/uses for that culture), parsed
-    from the "Anwendungshinweise pro zugelassener Kultur und Schaderreger"
-    nested details tree."""
+    (the highest across all listed pests/uses for that culture) and, when
+    unambiguous, its season - parsed from the "Anwendungshinweise pro
+    zugelassener Kultur und Schaderreger" nested details tree."""
     soup = BeautifulSoup(details_html or "", "html.parser")
     h4 = soup.find("h4", string=lambda t: t and "Anwendungshinweise pro zugelassener Kultur" in t)
     wrapper = h4.find_next_sibling("details") if h4 else None
@@ -460,20 +473,33 @@ def parse_culture_usage_rates(details_html):
         if not cultures:
             continue
         best_amount, best_unit = None, None
-        for row in culture_details.find_all("tr"):
-            cells = row.find_all("td")
-            if len(cells) != 2:
-                continue
-            label = cells[0].get_text(strip=True)
-            if label.startswith("max. Aufwandsmenge") and "Saison" not in label:
-                amount, unit = _parse_rate_amount_and_unit(cells[1].get_text(strip=True))
-                if amount is not None and (best_amount is None or amount > best_amount):
-                    best_amount, best_unit = amount, unit
+        seasons_found = set()
+        # Each nested <table> is one pest/use entry for this culture - scan
+        # per table so a season mention pairs with its own entry, not a
+        # neighboring one, then only keep the season if every entry for
+        # this culture agrees (otherwise it's not a single clean answer).
+        for table in culture_details.find_all("table"):
+            timing_text = []
+            for row in table.find_all("tr"):
+                cells = row.find_all("td")
+                if len(cells) != 2:
+                    continue
+                label, value = cells[0].get_text(strip=True), cells[1].get_text(strip=True)
+                if label.startswith("max. Aufwandsmenge") and "Saison" not in label:
+                    amount, unit = _parse_rate_amount_and_unit(value)
+                    if amount is not None and (best_amount is None or amount > best_amount):
+                        best_amount, best_unit = amount, unit
+                elif label.startswith("Anwendungszeitpunkt") or label.startswith("Stadium Kultur"):
+                    timing_text.append(value)
+            season = detect_season(" ".join(timing_text))
+            if season:
+                seasons_found.add(season)
         if best_amount is None:
             continue
+        block_season = seasons_found.pop() if len(seasons_found) == 1 else None
         for culture in cultures:
             if culture not in rates or best_amount > rates[culture][0]:
-                rates[culture] = (best_amount, best_unit)
+                rates[culture] = (best_amount, best_unit, block_season)
     return rates
 
 
@@ -540,12 +566,12 @@ def compute_culture_cost(rate_amount, rate_unit, price_per_unit, unit):
 
 
 def max_matching_rate(rates, unit):
-    """Highest rate among `rates` (a {name: (amount, rate_unit)} dict)
-    whose unit matches `unit` (e.g. rate_unit "l/ha" matches unit "l") -
-    filtering before taking the max so a mismatched-unit rate on one
-    culture can't shadow a valid same-unit rate on another."""
+    """Highest rate among `rates` (a {name: (amount, rate_unit, season)}
+    dict) whose unit matches `unit` (e.g. rate_unit "l/ha" matches unit
+    "l") - filtering before taking the max so a mismatched-unit rate on
+    one culture can't shadow a valid same-unit rate on another."""
     matching = [
-        (amount, rate_unit) for amount, rate_unit in rates.values()
+        (amount, rate_unit) for amount, rate_unit, _season in rates.values()
         if rate_unit and unit and rate_unit.split("/")[0].lower() == unit.lower()
     ]
     return max(matching, key=lambda r: r[0]) if matching else (None, None)
@@ -571,15 +597,15 @@ def resolve_cost_per_hectare(product, row):
 
 
 def get_culture_entries(product):
-    """List of (culture_name, rate_amount, rate_unit) to emit one row per
-    culture. Falls back to splitting the plain comma-separated culture list
-    (no per-hectare rate available then - common for Dünger, which has no
-    per-culture rate table) when there's no rate table at all."""
+    """List of (culture_name, rate_amount, rate_unit, season) to emit one
+    row per culture. Falls back to splitting the plain comma-separated
+    culture list (no rate or season available then - common for Dünger,
+    which has no per-culture rate table) when there's no rate table at all."""
     if product["culture_rates"]:
-        return [(name, amount, unit) for name, (amount, unit) in product["culture_rates"].items()]
+        return [(name, amount, unit, season) for name, (amount, unit, season) in product["culture_rates"].items()]
     if product["approved_cultures"]:
-        return [(name.strip(), None, None) for name in product["approved_cultures"].split(",") if name.strip()]
-    return [(None, None, None)]
+        return [(name.strip(), None, None, None) for name in product["approved_cultures"].split(",") if name.strip()]
+    return [(None, None, None, None)]
 
 
 def find_label_pdf_url(details_html):
@@ -649,6 +675,7 @@ def process_product_url(product, session, retries=2):
         "approved_cultures": extra.get("Zugelassene Kulturen"),
         "culture_rates": culture_rates,
         "label_pdf_url": label_pdf_url,
+        "label_holder": extra.get("Hersteller"),
     }
 
 
@@ -657,6 +684,12 @@ def scrape():
 
     print(f"\nFetching prices for {len(products)} products...")
     results = []
+    # One entry per (product, culture) for herbicide products - keyed to
+    # dedupe automatically across the multiple package-size rows below,
+    # since culture/active ingredient/season/label holder don't vary by
+    # package size. Consumed by save_to_excel() to build the Herbicides
+    # sheet, joined there against the price-comparison data.
+    herbicide_entries = {}
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(process_product_url, product, session): product for product in products}
         completed = 0
@@ -680,12 +713,16 @@ def scrape():
                         "Application Group": product["application_group"],
                         "Active Ingredients": product["active_ingredients"],
                     }
-                    tail = {"Label PDF": product["label_pdf_url"], "URL": product["url"]}
+                    tail = {
+                        "Label Holder": product["label_holder"],
+                        "Label PDF": product["label_pdf_url"],
+                        "URL": product["url"],
+                    }
                     # One row per approved culture, so each row/cell holds
                     # exactly one culture - lets a plain Excel filter isolate
                     # a single culture cleanly, instead of everything sharing
                     # one product's combined culture list.
-                    for culture, rate_amount, rate_unit in get_culture_entries(product):
+                    for culture, rate_amount, rate_unit, season in get_culture_entries(product):
                         results.append({
                             **base,
                             "Approved Culture": culture,
@@ -694,9 +731,18 @@ def scrape():
                             ),
                             **tail,
                         })
+                        if product["application_group"] == "Herbizid" and culture:
+                            herbicide_entries[(product["url"], culture)] = {
+                                "Name": product["name"],
+                                "Segment": product["application_group"],
+                                "Culture": culture,
+                                "Active Ingredient": product["active_ingredients"],
+                                "Season": season,
+                                "URL": product["url"],
+                            }
 
     print(f"\nDone. Found {len(results)} rows across all products.")
-    return results
+    return results, list(herbicide_entries.values())
 
 
 PRICE_COLUMN_NAMES = ["Total Price for Packaging Size (EUR)", "Total Price (EUR)"]
@@ -752,6 +798,7 @@ def build_comparison_rows(current_df, previous_df):
                 "Previous Price per Unit (EUR)": None,
                 "Current Price per Unit (EUR)": curr_price,
                 "Change (EUR)": None, "Change (%)": None, "Status": "New product",
+                "URL": url,
             })
         else:
             prev_price = prev["Best Price per Unit (EUR)"]
@@ -768,10 +815,15 @@ def build_comparison_rows(current_df, previous_df):
                 "Previous Price per Unit (EUR)": prev_price,
                 "Current Price per Unit (EUR)": curr_price,
                 "Change (EUR)": change_eur, "Change (%)": change_pct, "Status": status,
+                "URL": url,
             })
 
+    # URL is included for reliable joining elsewhere (e.g. the Herbicides
+    # sheet) - two different products can share the same display Name
+    # (confirmed on real data: two "Agrotop Messzylinder" SKUs), so Name
+    # alone isn't a safe join key.
     columns = ["Name", "Package Size", "Previous Price per Unit (EUR)",
-               "Current Price per Unit (EUR)", "Change (EUR)", "Change (%)", "Status"]
+               "Current Price per Unit (EUR)", "Change (EUR)", "Change (%)", "Status", "URL"]
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -814,27 +866,84 @@ def highlight_best_prices(filename, sheet_name="Current Run"):
     print(f"Highlighted best per-unit price for {highlighted} multi-size product(s).")
 
 
+def build_herbicide_sheet(herbicide_entries, comparison_df):
+    """One row per (herbicide product, approved culture): name, segment,
+    the two sub-segment dimensions (culture, active ingredient), season,
+    and this run's price change vs the previous run - joined by URL, not
+    Name (confirmed on real data: two different products, "Agrotop
+    Messzylinder", share the same display Name, so Name alone isn't a
+    safe join key)."""
+    columns = ["Name", "Segment", "Sub-segment (Culture)", "Sub-segment (Active Ingredient)",
+               "Season", "Change (%)"]
+    if not herbicide_entries:
+        return pd.DataFrame(columns=columns)
+
+    change_by_url = dict(zip(comparison_df["URL"], comparison_df["Change (%)"]))
+
+    rows = [{
+        "Name": entry["Name"],
+        "Segment": entry["Segment"],
+        "Sub-segment (Culture)": entry["Culture"],
+        "Sub-segment (Active Ingredient)": entry["Active Ingredient"],
+        "Season": entry["Season"],
+        "Change (%)": change_by_url.get(entry["URL"]),
+    } for entry in herbicide_entries]
+
+    df = pd.DataFrame(rows, columns=columns)
+    return df.sort_values(["Name", "Sub-segment (Culture)"]).reset_index(drop=True)
+
+
 def style_worksheet(filename):
-    """Format the comparison sheet's Change (%) column with a visible %
-    sign while keeping the underlying value numeric/sortable."""
+    """Post-save formatting: a visible % sign on Comparison's and
+    Herbicides' Change (%) columns (still numeric/sortable underneath),
+    and a clean, readable layout for the Herbicides summary sheet - bold
+    header, autofilter, frozen header row, sane column widths."""
     from openpyxl import load_workbook
+    from openpyxl.styles import Font, PatternFill
 
     wb = load_workbook(filename)
 
-    if "Comparison" in wb.sheetnames:
-        ws = wb["Comparison"]
+    def format_percent_column(ws):
         headers = [cell.value for cell in ws[1]]
-        if "Change (%)" in headers:
-            col = headers.index("Change (%)") + 1
+        if "Change (%)" not in headers:
+            return
+        col = headers.index("Change (%)") + 1
+        for row_idx in range(2, ws.max_row + 1):
+            cell = ws.cell(row=row_idx, column=col)
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = '0.0"%"'
+
+    if "Comparison" in wb.sheetnames:
+        format_percent_column(wb["Comparison"])
+
+    if "Herbicides" in wb.sheetnames:
+        ws = wb["Herbicides"]
+        format_percent_column(ws)
+
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF")
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+        ws.freeze_panes = "A2"
+        if ws.max_row > 1:
+            ws.auto_filter.ref = ws.dimensions
+
+        # Column widths sized to their content, capped so no single
+        # column (e.g. a long active-ingredient string) dominates the sheet.
+        for col_idx, header in enumerate([c.value for c in ws[1]], start=1):
+            letter = ws.cell(row=1, column=col_idx).column_letter
+            max_len = len(str(header))
             for row_idx in range(2, ws.max_row + 1):
-                cell = ws.cell(row=row_idx, column=col)
-                if isinstance(cell.value, (int, float)):
-                    cell.number_format = '0.0"%"'
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if val is not None:
+                    max_len = max(max_len, len(str(val)))
+            ws.column_dimensions[letter].width = min(max_len + 2, 45)
 
     wb.save(filename)
 
 
-def save_to_excel(data, filename=DESKTOP_PATH):
+def save_to_excel(data, herbicide_entries, filename=DESKTOP_PATH):
     if not data:
         print("No data extracted - Excel file not created.")
         return
@@ -858,19 +967,22 @@ def save_to_excel(data, filename=DESKTOP_PATH):
         print(f"\nComparison to previous run: {len(comparison_df)} price(s) changed or new.")
     else:
         comparison_df = pd.DataFrame(columns=["Name", "Package Size", "Previous Price (EUR)",
-                                               "Current Price (EUR)", "Change (EUR)", "Change (%)", "Status"])
+                                               "Current Price (EUR)", "Change (EUR)", "Change (%)", "Status", "URL"])
         print("\nNo previous file found - this run becomes the baseline for future comparisons.")
+
+    herbicide_df = build_herbicide_sheet(herbicide_entries, comparison_df)
 
     with pd.ExcelWriter(filename, engine="openpyxl") as writer:
         current_df.to_excel(writer, sheet_name="Current Run", index=False)
         if previous_df is not None:
             previous_df.to_excel(writer, sheet_name="Previous Run", index=False)
         comparison_df.to_excel(writer, sheet_name="Comparison", index=False)
+        herbicide_df.to_excel(writer, sheet_name="Herbicides", index=False)
 
     highlight_best_prices(filename, "Current Run")
     style_worksheet(filename)
 
-    print(f"Success! Saved {len(data)} rows to {filename}")
+    print(f"Success! Saved {len(data)} rows to {filename} ({len(herbicide_df)} herbicide entries)")
 
 
 if __name__ == "__main__":
@@ -878,8 +990,8 @@ if __name__ == "__main__":
     print("  MyAgrar Crop Protection Price Extractor")
     print("=" * 50)
     try:
-        data = scrape()
-        save_to_excel(data)
+        data, herbicide_entries = scrape()
+        save_to_excel(data, herbicide_entries)
         print(f"\nAll done! Open the file here:\n{DESKTOP_PATH}")
     except Exception as e:
         print(f"\nSomething went wrong: {e}")
