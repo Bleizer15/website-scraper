@@ -14,3 +14,9 @@ platform_detect.py
 shopware_extract.py
 sw_test.txt
 targets.txt
+DEMAND_TEST.md
+PRICEWATCH_NOTES.md
+competitor_prices.xlsx
+demand_test_tracker.csv
+demo.xlsx
+pricewatch.py
