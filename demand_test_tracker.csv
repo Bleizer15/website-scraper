@@ -1,0 +1,16 @@
+company;url;contact_person;phone;competitor_A;competitor_B;date;channel;reached;monitors_competitors;how;tool_name;asked_price;consent_email;quote
+kaniedenta;https://www.kaniedenta.de;Stephan Holtkamp (GF);05221-34550;dentalbauer;geizdental;;;;;;;;;
+trade4dent;https://trade4dent.com;Michael Herdt (GF);069-50608880;geizdental;dentalbauer;;;;;;;;;
+klapperzaehnchen;https://klapperzaehnchen.de;;0741-17400-450;geizdental;kaniedenta;;;;;;;;;
+direct-onlinehandel;https://shop.direct-onlinehandel.de;;VERIFY ON SITE;b2b-hygiene;geizdental;;;;;;;;;
+b2b-hygiene;https://b2b-hygiene.com;;VERIFY ON SITE;direct-onlinehandel;geizdental;;;;;;;;;
+geizdental;https://geizdental.de;;VERIFY ON SITE;dentalbauer;kaniedenta;;;;;;;;;
+dentalbauer;https://www.dentalbauer.de;Marcus Dahlinger (GF);00800 77655440;geizdental;kaniedenta;;;;;;;;;
+;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;
