@@ -855,38 +855,45 @@ def load_product_groups(path):
     {product_name: (product_group, segment)} lookup - Product Group from
     that file's own Segment column (e.g. "Spring Herbizid"), Segment from
     its Sub-segment column. Column names are matched case-insensitively
-    since we don't control how the file's headers are typed."""
+    since we don't control how the file's headers are typed. Searches
+    every sheet for one with a "Name" column, rather than just the first -
+    the reference files put the actual data in a sheet called "lookup",
+    with other sheets (a demo pivot, etc.) before or after it."""
     if not path:
         return {}
     try:
-        df = pd.read_excel(path)
+        sheets = pd.read_excel(path, sheet_name=None)
     except Exception as e:
         print(f"  Could not read additional document: {e}")
         return {}
 
-    def find_column(name):
+    def find_column(df, name):
         for col in df.columns:
             if str(col).strip().lower() == name.lower():
                 return col
         return None
 
-    name_col = find_column("Name")
-    segment_col = find_column("Segment")
-    subsegment_col = find_column("Sub-segment")
-    if not name_col:
-        print("  Additional document has no 'Name' column - can't match products, skipping.")
-        return {}
-
-    lookup = {}
-    for _, row in df.iterrows():
-        name = str(row[name_col]).strip()
-        if not name or name.lower() == "nan":
+    for sheet_name, df in sheets.items():
+        name_col = find_column(df, "Name")
+        if not name_col:
             continue
-        lookup[name] = (
-            row[segment_col] if segment_col is not None else None,
-            row[subsegment_col] if subsegment_col is not None else None,
-        )
-    return lookup
+        segment_col = find_column(df, "Segment")
+        subsegment_col = find_column(df, "Sub-segment")
+
+        lookup = {}
+        for _, row in df.iterrows():
+            name = str(row[name_col]).strip()
+            if not name or name.lower() == "nan":
+                continue
+            lookup[name] = (
+                row[segment_col] if segment_col is not None else None,
+                row[subsegment_col] if subsegment_col is not None else None,
+            )
+        print(f"  Loaded {len(lookup)} product classifications from sheet '{sheet_name}'.")
+        return lookup
+
+    print("  Additional document has no sheet with a 'Name' column - can't match products, skipping.")
+    return {}
 
 
 def build_product_group_sheet(product_groups, comparison_df):
