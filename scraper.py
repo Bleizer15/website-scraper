@@ -897,24 +897,26 @@ def load_product_groups(path):
 
 
 def build_product_group_sheet(product_groups, comparison_df):
-    """Herbicide price-change summary grouped like an Excel pivot - rows
-    grouped by Product Group then Segment, a subtotal row per Product
-    Group ("X Ergebnis") and a grand total ("Gesamtergebnis") at the
-    bottom (labelled the way Excel labels a German-locale pivot -
-    confirmed against a reference pivot the user built by hand).
+    """Herbicide price-change pivot, matching the layout of the reference
+    pivot the user built by hand (its "Tabelle3" sheet):
 
-    One row per product, each row self-contained: the group/segment
-    labels repeat on every row (not blanked out on repeats) and a Name
-    column identifies the product, so it's always clear which product a
-    row is and which group it belongs to. Matched by product Name - the
-    only key the classification file provides. Missing Product Group or
-    Segment values show as "(Leer)", matching Excel's convention for a
-    blank pivot field.
+      - one row per Segment + Sub-Segment combination (products in a
+        bucket are aggregated, not listed individually)
+      - value is the sum of Change (%) across that bucket's products
+      - Excel "compact form": the outer Segment label is shown once per
+        group, blank on its following Sub-Segment rows
+      - a subtotal row per Segment ("<Segment> Ergebnis") and a grand
+        total ("Gesamtergebnis") at the bottom
+      - blank Segment / Sub-Segment values show as "(Leer)"
+
+    Products are matched to their price change by Name - the only key
+    the classification file provides. The two leading blank rows Excel
+    leaves above a pivot are added when the sheet is written, not here.
 
     Built as plain computed data, not a real pivot table object - Python
     can't reliably create those from scratch, and the file is rebuilt
     fresh every run anyway."""
-    columns = ["PrdGroup", "Segment", "Name", "Change (%)"]
+    columns = ["Segment", "Sub-Segment", "Summe von Change (%)"]
     if not product_groups:
         return pd.DataFrame(columns=columns)
 
@@ -924,36 +926,39 @@ def build_product_group_sheet(product_groups, comparison_df):
         return str(value).strip() if pd.notna(value) and str(value).strip() else "(Leer)"
 
     detail = pd.DataFrame([{
-        "Name": name,
-        "PrdGroup": clean(product_group),
-        "Segment": clean(segment),
-        "Change (%)": change_by_name.get(name),
-    } for name, (product_group, segment) in product_groups.items()])
-    detail = detail.sort_values(["PrdGroup", "Segment", "Name"]).reset_index(drop=True)
+        "Segment": clean(outer),
+        "Sub-Segment": clean(inner),
+        "Change (%)": change_by_name.get(name) or 0.0,
+    } for name, (outer, inner) in product_groups.items()])
+
+    bucket_sums = (
+        detail.groupby(["Segment", "Sub-Segment"])["Change (%)"].sum()
+        .round(2).reset_index().sort_values(["Segment", "Sub-Segment"])
+    )
 
     rows = []
     grand_total = 0.0
-    for prd_group, group_df in detail.groupby("PrdGroup", sort=False):
-        group_total = 0.0
-        for _, r in group_df.iterrows():
+    for segment, seg_df in bucket_sums.groupby("Segment", sort=False):
+        segment_total = 0.0
+        first = True
+        for _, r in seg_df.iterrows():
             value = r["Change (%)"]
-            if pd.notna(value):
-                group_total += value
+            segment_total += value
             rows.append({
-                "PrdGroup": prd_group,
-                "Segment": r["Segment"],
-                "Name": r["Name"],
-                "Change (%)": value if pd.notna(value) else 0,
+                "Segment": segment if first else "",
+                "Sub-Segment": r["Sub-Segment"],
+                "Summe von Change (%)": round(value, 2),
             })
+            first = False
         rows.append({
-            "PrdGroup": f"{prd_group} Ergebnis", "Segment": "", "Name": "",
-            "Change (%)": round(group_total, 1),
+            "Segment": f"{segment} Ergebnis", "Sub-Segment": "",
+            "Summe von Change (%)": round(segment_total, 2),
         })
-        grand_total += group_total
+        grand_total += segment_total
 
     rows.append({
-        "PrdGroup": "Gesamtergebnis", "Segment": "", "Name": "",
-        "Change (%)": round(grand_total, 1),
+        "Segment": "Gesamtergebnis", "Sub-Segment": "",
+        "Summe von Change (%)": round(grand_total, 2),
     })
 
     return pd.DataFrame(rows, columns=columns)
@@ -987,32 +992,47 @@ def style_worksheet(filename):
 
     if "Pivot" in wb.sheetnames:
         ws = wb["Pivot"]
-        format_percent_column(ws)
+
+        # The Pivot sheet has two blank spacer rows above its header
+        # (matching how Excel places a real pivot) - find the header row
+        # rather than assuming row 1.
+        header_row = next(
+            (r for r in range(1, ws.max_row + 1) if ws.cell(row=r, column=1).value == "Segment"),
+            1,
+        )
+
+        headers = [ws.cell(row=header_row, column=c).value for c in range(1, ws.max_column + 1)]
+        value_col = next((i + 1 for i, h in enumerate(headers) if h and "Change (%)" in str(h)), None)
+        if value_col:
+            for row_idx in range(header_row + 1, ws.max_row + 1):
+                cell = ws.cell(row=row_idx, column=value_col)
+                if isinstance(cell.value, (int, float)):
+                    cell.number_format = '0.0"%"'
 
         header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
         header_font = Font(bold=True, color="FFFFFF")
-        for cell in ws[1]:
+        for cell in ws[header_row]:
             cell.fill = header_fill
             cell.font = header_font
-        ws.freeze_panes = "A2"
+        ws.freeze_panes = f"A{header_row + 1}"
 
         # Bold the subtotal ("X Ergebnis") and grand-total ("Gesamtergebnis")
         # rows, same as Excel does for a real pivot's summary rows.
-        for row_idx in range(2, ws.max_row + 1):
+        for row_idx in range(header_row + 1, ws.max_row + 1):
             label = ws.cell(row=row_idx, column=1).value
             if label and "ergebnis" in str(label).lower():
                 for cell in ws[row_idx]:
                     cell.font = Font(bold=True)
 
-        # Column widths sized to their content, capped so no single
-        # column (e.g. a long active-ingredient string) dominates the sheet.
-        for col_idx, header in enumerate([c.value for c in ws[1]], start=1):
-            letter = ws.cell(row=1, column=col_idx).column_letter
-            max_len = len(str(header))
-            for row_idx in range(2, ws.max_row + 1):
-                val = ws.cell(row=row_idx, column=col_idx).value
-                if val is not None:
-                    max_len = max(max_len, len(str(val)))
+        # Column widths sized to their content.
+        for col_idx in range(1, ws.max_column + 1):
+            letter = ws.cell(row=header_row, column=col_idx).column_letter
+            max_len = max(
+                (len(str(ws.cell(row=r, column=col_idx).value))
+                 for r in range(header_row, ws.max_row + 1)
+                 if ws.cell(row=r, column=col_idx).value is not None),
+                default=10,
+            )
             ws.column_dimensions[letter].width = min(max_len + 2, 45)
 
     wb.save(filename)
@@ -1052,7 +1072,9 @@ def save_to_excel(data, product_groups, filename=DESKTOP_PATH):
         if previous_df is not None:
             previous_df.to_excel(writer, sheet_name="Previous Run", index=False)
         comparison_df.to_excel(writer, sheet_name="Comparison", index=False)
-        product_group_df.to_excel(writer, sheet_name="Pivot", index=False)
+        # Two blank spacer rows above the header, the way Excel places a
+        # real pivot on its sheet.
+        product_group_df.to_excel(writer, sheet_name="Pivot", index=False, startrow=2)
 
     highlight_best_prices(filename, "Current Run")
     style_worksheet(filename)
