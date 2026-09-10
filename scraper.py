@@ -897,23 +897,24 @@ def load_product_groups(path):
 
 
 def build_product_group_sheet(product_groups, comparison_df):
-    """Mimics the look of a native Excel PivotTable - rows grouped by
-    Product Group then Segment (each label shown once per group, Excel's
-    "compact form" convention), with a subtotal row per Product Group
-    ("X Ergebnis") and a grand total ("Gesamtergebnis") at the bottom,
-    labelled exactly the way Excel itself labels a German-locale pivot -
-    confirmed against a real reference pivot the user built by hand.
-    One row per product (not aggregated together when several share a
-    classification), matched by product Name - the only key the
-    additional classification file provides. Missing Product Group or
-    Segment values show as "(Leer)", matching Excel's own convention for
-    a blank pivot field.
+    """Herbicide price-change summary grouped like an Excel pivot - rows
+    grouped by Product Group then Segment, a subtotal row per Product
+    Group ("X Ergebnis") and a grand total ("Gesamtergebnis") at the
+    bottom (labelled the way Excel labels a German-locale pivot -
+    confirmed against a reference pivot the user built by hand).
+
+    One row per product, each row self-contained: the group/segment
+    labels repeat on every row (not blanked out on repeats) and a Name
+    column identifies the product, so it's always clear which product a
+    row is and which group it belongs to. Matched by product Name - the
+    only key the classification file provides. Missing Product Group or
+    Segment values show as "(Leer)", matching Excel's convention for a
+    blank pivot field.
 
     Built as plain computed data, not a real pivot table object - Python
     can't reliably create those from scratch, and the file is rebuilt
-    fresh every run anyway, so a live drag-and-drop pivot has no real
-    advantage here over an identical-looking static one."""
-    columns = ["PrdGroup", "Segment", "Summe von Change (%)"]
+    fresh every run anyway."""
+    columns = ["PrdGroup", "Segment", "Name", "Change (%)"]
     if not product_groups:
         return pd.DataFrame(columns=columns)
 
@@ -934,26 +935,26 @@ def build_product_group_sheet(product_groups, comparison_df):
     grand_total = 0.0
     for prd_group, group_df in detail.groupby("PrdGroup", sort=False):
         group_total = 0.0
-        shown_group = False
-        last_segment = None
         for _, r in group_df.iterrows():
             value = r["Change (%)"]
             if pd.notna(value):
                 group_total += value
             rows.append({
-                "PrdGroup": prd_group if not shown_group else "",
-                "Segment": r["Segment"] if r["Segment"] != last_segment else "",
-                "Summe von Change (%)": value if pd.notna(value) else 0,
+                "PrdGroup": prd_group,
+                "Segment": r["Segment"],
+                "Name": r["Name"],
+                "Change (%)": value if pd.notna(value) else 0,
             })
-            shown_group = True
-            last_segment = r["Segment"]
         rows.append({
-            "PrdGroup": f"{prd_group} Ergebnis", "Segment": "",
-            "Summe von Change (%)": round(group_total, 1),
+            "PrdGroup": f"{prd_group} Ergebnis", "Segment": "", "Name": "",
+            "Change (%)": round(group_total, 1),
         })
         grand_total += group_total
 
-    rows.append({"PrdGroup": "Gesamtergebnis", "Segment": "", "Summe von Change (%)": round(grand_total, 1)})
+    rows.append({
+        "PrdGroup": "Gesamtergebnis", "Segment": "", "Name": "",
+        "Change (%)": round(grand_total, 1),
+    })
 
     return pd.DataFrame(rows, columns=columns)
 
