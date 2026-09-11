@@ -897,17 +897,23 @@ def load_product_groups(path):
 
 
 def build_product_group_sheet(product_groups, comparison_df):
-    """Herbicide price-change pivot, matching the layout of the reference
-    pivot the user built by hand (its "Tabelle3" sheet):
+    """Herbicide price-change pivot, 3 columns matching the reference
+    pivot the user built by hand ("Tabelle2": Prd group | Segment |
+    Change %, and the original Pivot sheet: PrdGroup | Segment | Summe
+    von Change (%)):
 
-      - one row per Segment + Sub-Segment combination (products in a
+      - one row per PrdGroup + Segment combination (products in a
         bucket are aggregated, not listed individually)
-      - value is the sum of Change (%) across that bucket's products
-      - Excel "compact form": the outer Segment label is shown once per
-        group, blank on its following Sub-Segment rows
-      - a subtotal row per Segment ("<Segment> Ergebnis") and a grand
+      - value is the sum of Change (%) across that bucket's products -
+        the price change is computed from the scraped website data
+        (see build_comparison_rows); PrdGroup and Segment come from the
+        user-provided classification file (its own Segment and
+        Sub-segment columns respectively)
+      - Excel "compact form": the outer PrdGroup label is shown once
+        per group, blank on its following Segment rows
+      - a subtotal row per PrdGroup ("<PrdGroup> Ergebnis") and a grand
         total ("Gesamtergebnis") at the bottom
-      - blank Segment / Sub-Segment values show as "(Leer)"
+      - blank PrdGroup / Segment values show as "(Leer)"
 
     Products are matched to their price change by Name - the only key
     the classification file provides. The two leading blank rows Excel
@@ -916,7 +922,7 @@ def build_product_group_sheet(product_groups, comparison_df):
     Built as plain computed data, not a real pivot table object - Python
     can't reliably create those from scratch, and the file is rebuilt
     fresh every run anyway."""
-    columns = ["Segment", "Sub-Segment", "Summe von Change (%)"]
+    columns = ["PrdGroup", "Segment", "Summe von Change (%)"]
     if not product_groups:
         return pd.DataFrame(columns=columns)
 
@@ -926,38 +932,38 @@ def build_product_group_sheet(product_groups, comparison_df):
         return str(value).strip() if pd.notna(value) and str(value).strip() else "(Leer)"
 
     detail = pd.DataFrame([{
-        "Segment": clean(outer),
-        "Sub-Segment": clean(inner),
+        "PrdGroup": clean(prd_group),
+        "Segment": clean(segment),
         "Change (%)": change_by_name.get(name) or 0.0,
-    } for name, (outer, inner) in product_groups.items()])
+    } for name, (prd_group, segment) in product_groups.items()])
 
     bucket_sums = (
-        detail.groupby(["Segment", "Sub-Segment"])["Change (%)"].sum()
-        .round(2).reset_index().sort_values(["Segment", "Sub-Segment"])
+        detail.groupby(["PrdGroup", "Segment"])["Change (%)"].sum()
+        .round(2).reset_index().sort_values(["PrdGroup", "Segment"])
     )
 
     rows = []
     grand_total = 0.0
-    for segment, seg_df in bucket_sums.groupby("Segment", sort=False):
-        segment_total = 0.0
+    for prd_group, group_df in bucket_sums.groupby("PrdGroup", sort=False):
+        group_total = 0.0
         first = True
-        for _, r in seg_df.iterrows():
+        for _, r in group_df.iterrows():
             value = r["Change (%)"]
-            segment_total += value
+            group_total += value
             rows.append({
-                "Segment": segment if first else "",
-                "Sub-Segment": r["Sub-Segment"],
+                "PrdGroup": prd_group if first else "",
+                "Segment": r["Segment"],
                 "Summe von Change (%)": round(value, 2),
             })
             first = False
         rows.append({
-            "Segment": f"{segment} Ergebnis", "Sub-Segment": "",
-            "Summe von Change (%)": round(segment_total, 2),
+            "PrdGroup": f"{prd_group} Ergebnis", "Segment": "",
+            "Summe von Change (%)": round(group_total, 2),
         })
-        grand_total += segment_total
+        grand_total += group_total
 
     rows.append({
-        "Segment": "Gesamtergebnis", "Sub-Segment": "",
+        "PrdGroup": "Gesamtergebnis", "Segment": "",
         "Summe von Change (%)": round(grand_total, 2),
     })
 
@@ -997,7 +1003,7 @@ def style_worksheet(filename):
         # (matching how Excel places a real pivot) - find the header row
         # rather than assuming row 1.
         header_row = next(
-            (r for r in range(1, ws.max_row + 1) if ws.cell(row=r, column=1).value == "Segment"),
+            (r for r in range(1, ws.max_row + 1) if ws.cell(row=r, column=1).value == "PrdGroup"),
             1,
         )
 
