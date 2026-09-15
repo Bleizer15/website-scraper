@@ -944,9 +944,15 @@ def build_product_group_sheet(product_groups, comparison_df):
         "Change (%)": change_by_name.get(name) or 0.0,
     } for name, (prd_group, segment) in product_groups.items()])
 
+    # "(Leer)" (unclassified) sorts after every real value, not before -
+    # alphabetical order would otherwise put it first ("(" sorts before
+    # any letter), leading with the least useful group.
+    def sort_key(series):
+        return series.map(lambda v: (v == "(Leer)", v))
+
     bucket_sums = (
         detail.groupby(["PrdGroup", "Segment"])["Change (%)"].sum()
-        .round(2).reset_index().sort_values(["PrdGroup", "Segment"])
+        .round(2).reset_index().sort_values(["PrdGroup", "Segment"], key=sort_key)
     )
 
     rows = []
