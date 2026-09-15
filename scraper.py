@@ -854,11 +854,14 @@ def load_product_groups(path):
     """Read the additional classification file into a
     {product_name: (product_group, segment)} lookup - Product Group from
     that file's own Segment column (e.g. "Spring Herbizid"), Segment from
-    its Sub-segment column. Column names are matched case-insensitively
-    since we don't control how the file's headers are typed. Searches
-    every sheet for one with a "Name" column, rather than just the first -
-    the reference files put the actual data in a sheet called "lookup",
-    with other sheets (a demo pivot, etc.) before or after it."""
+    its Sub-segment column. Column names are matched loosely - case,
+    spaces, hyphens and underscores are all ignored (so "Sub-Segment",
+    "sub segment", "SubSegment" and "sub_segment" all match the same
+    column), since we don't control how the file's headers are typed.
+    Searches every sheet for one with a "Name" column, rather than just
+    the first - the reference files put the actual data in a sheet
+    called "lookup", with other sheets (a demo pivot, etc.) before or
+    after it."""
     if not path:
         return {}
     try:
@@ -867,9 +870,13 @@ def load_product_groups(path):
         print(f"  Could not read additional document: {e}")
         return {}
 
+    def normalize(text):
+        return re.sub(r"[\s\-_]+", "", str(text).strip().lower())
+
     def find_column(df, name):
+        target = normalize(name)
         for col in df.columns:
-            if str(col).strip().lower() == name.lower():
+            if normalize(col) == target:
                 return col
         return None
 
