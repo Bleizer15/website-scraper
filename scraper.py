@@ -329,7 +329,21 @@ def get_all_package_rows(sp_config):
             "Unit": unit,
         })
 
-    return rows
+    # Bundle products (e.g. "Carmina Complett" = 10 l Carmina + 0.434 kg
+    # Alliance) can list the same pack size twice - once per bundled
+    # component's own simple-product SKU, both under the same nominal
+    # size. Confirmed on real data: both entries carry identical size and
+    # price, so it's the same pack referenced twice, not a genuinely
+    # different option - keep only the first.
+    seen = set()
+    deduped = []
+    for row in rows:
+        key = (row["Package Size"], row["Total Price for Packaging Size (EUR)"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
 
 
 def get_simple_package_row(html):
