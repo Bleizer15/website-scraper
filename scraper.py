@@ -911,8 +911,7 @@ def build_product_group_sheet(product_groups, comparison_df):
         every real value rather than alphabetically first
 
     Matched to price changes by Name - the only key the classification
-    file provides. The two leading blank rows Excel leaves above a
-    pivot are added when the sheet is written, not here.
+    file provides.
 
     Built as plain computed data, not a real pivot table object - Python
     can't reliably create those from scratch, and the file is rebuilt
@@ -1001,9 +1000,8 @@ def style_worksheet(filename):
     if "Pivot" in wb.sheetnames:
         ws = wb["Pivot"]
 
-        # The Pivot sheet has two blank spacer rows above its header
-        # (matching how Excel places a real pivot) - find the header row
-        # rather than assuming row 1.
+        # Find the header row rather than assuming row 1, in case a
+        # future format adds rows above it again.
         header_row = next(
             (r for r in range(1, ws.max_row + 1) if ws.cell(row=r, column=1).value == "PrdGroup"),
             1,
@@ -1080,9 +1078,7 @@ def save_to_excel(data, product_groups, filename=DESKTOP_PATH):
         if previous_df is not None:
             previous_df.to_excel(writer, sheet_name="Previous Run", index=False)
         comparison_df.to_excel(writer, sheet_name="Comparison", index=False)
-        # Two blank spacer rows above the header, the way Excel places a
-        # real pivot on its sheet.
-        product_group_df.to_excel(writer, sheet_name="Pivot", index=False, startrow=2)
+        product_group_df.to_excel(writer, sheet_name="Pivot", index=False)
 
     highlight_best_prices(filename, "Current Run")
     style_worksheet(filename)
