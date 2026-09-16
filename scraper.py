@@ -23,7 +23,6 @@ from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
-import xml.etree.ElementTree as ET
 import json
 import re
 from urllib.parse import urljoin
@@ -278,20 +277,6 @@ def find_size_attribute(attributes):
         if "size" in code or "container" in code or "gebinde" in code:
             return attr
     return numeric_attrs[0] if numeric_attrs else None
-
-
-def get_unit_price_from_label(basepricelabel_html):
-    soup = BeautifulSoup(basepricelabel_html or "", "html.parser")
-    final_span = soup.find("span", class_=lambda c: c and "base-price-final" in c)
-    if not final_span:
-        return None, None
-    price_el = final_span.find("span", class_="base-price-detail-price")
-    unit_el = final_span.find("span", class_="base-price-detail-unit")
-    price = None
-    if price_el:
-        price = _to_float(price_el.get_text(strip=True).replace("\u20ac", "").strip())
-    unit = unit_el.get_text(strip=True) if unit_el else None
-    return price, unit
 
 
 def get_unit_from_label(basepricelabel_html):
@@ -706,21 +691,6 @@ def scrape():
     return results
 
 
-PRICE_COLUMN_NAMES = ["Total Price for Packaging Size (EUR)", "Total Price (EUR)"]
-
-
-def _get_price_from_row(row):
-    """Read the total price from a row, trying the current column name
-    first and falling back to older names - so comparisons still work
-    even against files saved by an earlier version of this script."""
-    for col in PRICE_COLUMN_NAMES:
-        if col in row and pd.notna(row[col]):
-            val = row[col]
-            if isinstance(val, (int, float)):
-                return float(val)
-    return None
-
-
 def get_best_per_unit_prices(df):
     """For each product (grouped by URL, since multi-size products share
     one URL), find the size with the best (lowest) per-unit price."""
@@ -802,21 +772,25 @@ def highlight_best_prices(filename, sheet_name="Current Run"):
     ws = wb[sheet_name]
 
     headers = [cell.value for cell in ws[1]]
-    if "Name" not in headers or "Price per Unit (EUR)" not in headers:
+    # Grouped by URL, not Name - two different products can share the
+    # same display Name (confirmed on real data: two different "Agrotop
+    # Messzylinder" SKUs), which previously cross-highlighted one as a
+    # "cheaper size" of the other when they're unrelated products.
+    if "URL" not in headers or "Price per Unit (EUR)" not in headers:
         return
-    name_col = headers.index("Name") + 1
+    url_col = headers.index("URL") + 1
     price_col = headers.index("Price per Unit (EUR)") + 1
 
     groups = defaultdict(list)
     for row_idx in range(2, ws.max_row + 1):
-        name = ws.cell(row=row_idx, column=name_col).value
+        url = ws.cell(row=row_idx, column=url_col).value
         price = ws.cell(row=row_idx, column=price_col).value
         if isinstance(price, (int, float)):
-            groups[name].append((row_idx, price))
+            groups[url].append((row_idx, price))
 
     fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     highlighted = 0
-    for name, rows in groups.items():
+    for url, rows in groups.items():
         if len(rows) < 2:
             continue  # only one size available - nothing to compare
         best_row = min(rows, key=lambda x: x[1])[0]
