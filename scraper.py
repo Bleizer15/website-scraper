@@ -840,16 +840,17 @@ def get_additional_documents_path():
 
 def load_product_groups(path):
     """Read the additional classification file into a
-    {product_name: (product_group, segment)} lookup - Product Group from
-    that file's own Segment column (e.g. "Spring Herbizid"), Segment from
-    its Sub-segment column. Column names are matched loosely - case,
-    spaces, hyphens and underscores are all ignored (so "Sub-Segment",
-    "sub segment", "SubSegment" and "sub_segment" all match the same
-    column), since we don't control how the file's headers are typed.
-    Searches every sheet for one with a "Name" column, rather than just
-    the first - the reference files put the actual data in a sheet
-    called "lookup", with other sheets (a demo pivot, etc.) before or
-    after it."""
+    {product_name: (product_group, segment, active_ingredients)} lookup -
+    Product Group from that file's own Segment column (e.g. "Spring
+    Herbizid"), Segment from its Sub-segment column, Active Ingredients
+    from its own Active Ingredients column. Column names are matched
+    loosely - case, spaces, hyphens and underscores are all ignored (so
+    "Sub-Segment", "sub segment", "SubSegment" and "sub_segment" all
+    match the same column), since we don't control how the file's
+    headers are typed. Searches every sheet for one with a "Name"
+    column, rather than just the first - the reference files put the
+    actual data in a sheet called "lookup", with other sheets (a demo
+    pivot, etc.) before or after it."""
     if not path:
         return {}
     try:
@@ -874,6 +875,7 @@ def load_product_groups(path):
             continue
         segment_col = find_column(df, "Segment")
         subsegment_col = find_column(df, "Sub-segment")
+        active_ingredients_col = find_column(df, "Active Ingredients")
 
         lookup = {}
         for _, row in df.iterrows():
@@ -883,6 +885,7 @@ def load_product_groups(path):
             lookup[name] = (
                 row[segment_col] if segment_col is not None else None,
                 row[subsegment_col] if subsegment_col is not None else None,
+                row[active_ingredients_col] if active_ingredients_col is not None else None,
             )
         print(f"  Loaded {len(lookup)} product classifications from sheet '{sheet_name}'.")
         return lookup
@@ -895,20 +898,25 @@ def build_product_group_sheet(product_groups, comparison_df):
     """Herbicide price-change pivot, matching the reference pivot the
     user built by hand ("Tabelle2": Prd group | Segment | Change %, and
     the original Pivot sheet: PrdGroup | Segment | Summe von Change (%)),
-    with a Name column added so it's clear which product each row is:
+    with Name and Active Ingredients columns added so it's clear which
+    product each row is and what's in it:
 
       - one row per product, grouped under its PrdGroup and Segment -
-        PrdGroup and Segment come from the user-provided classification
-        file (its own Segment and Sub-segment columns respectively);
-        Change (%) is that specific product's own price change,
-        computed from the scraped website data (see build_comparison_rows)
+        PrdGroup, Segment, and Active Ingredients all come from the
+        user-provided classification file (its own Segment, Sub-segment,
+        and Active Ingredients columns respectively); Change (%) is that
+        specific product's own price change, computed from the scraped
+        website data (see build_comparison_rows)
       - Excel "compact form": the outer PrdGroup label is shown once per
-        group, and Segment once per segment within it - Name is always
-        shown, since it's the most granular level
+        group, and Segment once per segment within it - Name and Active
+        Ingredients are always shown, since Name is the most granular
+        grouping level
       - a subtotal row per PrdGroup ("<PrdGroup> Ergebnis", summing
         every product in it) and a grand total ("Gesamtergebnis")
       - blank PrdGroup / Segment values show as "(Leer)", sorted after
-        every real value rather than alphabetically first
+        every real value rather than alphabetically first; a blank
+        Active Ingredients just stays blank, since it isn't a grouping
+        key
 
     Matched to price changes by Name - the only key the classification
     file provides.
@@ -916,7 +924,7 @@ def build_product_group_sheet(product_groups, comparison_df):
     Built as plain computed data, not a real pivot table object - Python
     can't reliably create those from scratch, and the file is rebuilt
     fresh every run anyway."""
-    columns = ["PrdGroup", "Segment", "Name", "Summe von Change (%)"]
+    columns = ["PrdGroup", "Segment", "Name", "Active Ingredients", "Summe von Change (%)"]
     if not product_groups:
         return pd.DataFrame(columns=columns)
 
@@ -925,12 +933,16 @@ def build_product_group_sheet(product_groups, comparison_df):
     def clean(value):
         return str(value).strip() if pd.notna(value) and str(value).strip() else "(Leer)"
 
+    def clean_detail(value):
+        return str(value).strip() if pd.notna(value) and str(value).strip() else None
+
     detail = pd.DataFrame([{
         "PrdGroup": clean(prd_group),
         "Segment": clean(segment),
         "Name": name,
+        "Active Ingredients": clean_detail(active_ingredients),
         "Change (%)": change_by_name.get(name) or 0.0,
-    } for name, (prd_group, segment) in product_groups.items()])
+    } for name, (prd_group, segment, active_ingredients) in product_groups.items()])
 
     # "(Leer)" (unclassified) sorts after every real value, not before -
     # alphabetical order would otherwise put it first ("(" sorts before
@@ -953,18 +965,19 @@ def build_product_group_sheet(product_groups, comparison_df):
                 "PrdGroup": prd_group if not shown_group else "",
                 "Segment": r["Segment"] if r["Segment"] != last_segment else "",
                 "Name": r["Name"],
+                "Active Ingredients": r["Active Ingredients"],
                 "Summe von Change (%)": round(value, 2),
             })
             shown_group = True
             last_segment = r["Segment"]
         rows.append({
-            "PrdGroup": f"{prd_group} Ergebnis", "Segment": "", "Name": "",
+            "PrdGroup": f"{prd_group} Ergebnis", "Segment": "", "Name": "", "Active Ingredients": "",
             "Summe von Change (%)": round(group_total, 2),
         })
         grand_total += group_total
 
     rows.append({
-        "PrdGroup": "Gesamtergebnis", "Segment": "", "Name": "",
+        "PrdGroup": "Gesamtergebnis", "Segment": "", "Name": "", "Active Ingredients": "",
         "Summe von Change (%)": round(grand_total, 2),
     })
 
