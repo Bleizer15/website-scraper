@@ -1,0 +1,6 @@
+playwright
+pandas
+openpyxl
+requests
+beautifulsoup4
+truststore
